@@ -73,6 +73,11 @@ async def amain() -> None:
     for h in chat_picker.build_picker_handlers():
         app.add_handler(h)
 
+    # /balance "Mark paid" flow callbacks (pattern: ^bal_) — same reasoning,
+    # must come before roster's catch-all CallbackQueryHandler.
+    for h in balance.build_balance_callback_handlers():
+        app.add_handler(h)
+
     # Roster callbacks (catch-all) + text dispatcher — must come AFTER the
     # picker handler above.
     for h in roster.build_roster_handlers():
