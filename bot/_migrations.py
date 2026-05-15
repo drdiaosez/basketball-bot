@@ -183,7 +183,7 @@ def _002_games_chat_id_not_null(conn: sqlite3.Connection) -> None:
                 scheduled_for  TEXT NOT NULL,
                 location       TEXT NOT NULL,
                 organizer_id   INTEGER NOT NULL REFERENCES members(telegram_id),
-                max_players    INTEGER NOT NULL DEFAULT 10,
+                max_players    INTEGER NOT NULL DEFAULT 15,
                 status         TEXT NOT NULL DEFAULT 'open',
                 notes          TEXT,
                 chat_id        INTEGER NOT NULL,

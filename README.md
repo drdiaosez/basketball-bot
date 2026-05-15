@@ -142,6 +142,8 @@ Maybes never count toward `max_players` and never owe payment. Only Confirmed pl
 - ❌ No moneyball mini-app, no leaderboard, no `/merge` admin command
 - ❌ No HTTP server, no Caddy/domain requirement
 - ✅ Three signup tiers (Confirmed / Maybe / Waitlist) instead of two
-- ✅ Default `max_players` is 10 (5v5) instead of 4
+- ✅ Default `max_players` is 15 (a comfortable run for an open-gym) instead of 4
+- ✅ Default location pre-populated as "Quartz Sport in Carson"
+- ✅ Default game time pre-populated as next Monday at 8:30 PM (one-tap to accept)
 
 The DB schema is otherwise compatible; if you ever wanted to feed this bot from a pickleball-bot db dump, the `participants` and `games` tables would import cleanly.

@@ -632,7 +632,7 @@ async def _prompt_edit_max(
     context.user_data["pending_edit"] = {"game_id": game_id, "field": "max"}
     chat_id = update.effective_chat.id
     game = db.get_game(game_id)
-    current = game["max_players"] if game else 10
+    current = game["max_players"] if game else 15
     await context.bot.send_message(
         chat_id=chat_id,
         text=(

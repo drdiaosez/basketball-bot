@@ -52,7 +52,7 @@ def _create_schema() -> None:
             scheduled_for         TEXT NOT NULL,         -- ISO timestamp
             location              TEXT NOT NULL,
             organizer_id          INTEGER NOT NULL REFERENCES members(telegram_id),
-            max_players           INTEGER NOT NULL DEFAULT 10,
+            max_players           INTEGER NOT NULL DEFAULT 15,
             status                TEXT NOT NULL DEFAULT 'open',  -- open|cancelled|completed
             notes                 TEXT,
             chat_id               INTEGER,               -- group chat where it was created
@@ -342,7 +342,7 @@ def create_game(
     scheduled_for: datetime,
     location: str,
     organizer_id: int,
-    max_players: int = 10,
+    max_players: int = 15,
     notes: Optional[str] = None,
     chat_id: Optional[int] = None,
     payment_amount_cents: Optional[int] = None,
