@@ -3,4 +3,5 @@ games - Show upcoming games
 mygames - Show games you're signed up for
 past - Recent past games
 week - Games in a specific week (Mon-Sun)
+spend - Who's paid how much this calendar year
 help - Show help

@@ -653,6 +653,61 @@ def toggle_participant_paid(participant_id: int) -> Optional[dict]:
     return set_participant_paid(participant_id, not bool(p.get("is_paid")))
 
 
+def list_member_spend_in_range(
+    chat_id: int, start: datetime, end: datetime
+) -> list[dict]:
+    """Aggregate per-member spend over games scheduled in [start, end).
+
+    Counts only:
+      - confirmed participants (status='confirmed') — waitlist and maybe
+        never owed money, even if is_paid is somehow set on them
+      - participants with is_paid = 1
+      - participants that are members (member_id IS NOT NULL) — guests are
+        excluded; the user_id->display_name mapping doesn't exist for them
+      - games not cancelled
+      - games in the chat scope
+
+    Returns a list of dicts sorted by total_cents DESC, then display_name ASC
+    as a tiebreaker:
+      {
+        "member_id":    int,
+        "display_name": str,
+        "total_cents":  int,    # sum of payment_amount_cents
+        "games_paid":   int,    # number of paid games
+      }
+
+    Both bounds must be timezone-aware datetimes. Comparison uses the games
+    table's TEXT ISO date column, which works correctly with ISO-formatted
+    bounds because sort order matches chronological order.
+    """
+    assert _conn is not None
+    rows = _conn.execute(
+        """
+        SELECT m.telegram_id AS member_id,
+               m.display_name AS display_name,
+               COUNT(*) AS games_paid,
+               SUM(g.payment_amount_cents) AS total_cents
+        FROM participants p
+        JOIN games g   ON g.id = p.game_id
+        JOIN members m ON m.telegram_id = p.member_id
+        WHERE p.is_paid = 1
+          AND p.status = 'confirmed'
+          AND p.member_id IS NOT NULL
+          AND g.chat_id = ?
+          AND g.status != 'cancelled'
+          AND g.payment_amount_cents IS NOT NULL
+          AND g.payment_amount_cents > 0
+          AND g.scheduled_for >= ?
+          AND g.scheduled_for < ?
+        GROUP BY m.telegram_id, m.display_name
+        HAVING SUM(g.payment_amount_cents) > 0
+        ORDER BY total_cents DESC, LOWER(m.display_name) ASC
+        """,
+        (chat_id, start.isoformat(), end.isoformat()),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def update_game_max(game_id: int, max_players: int) -> dict:
     """Change max_players. Returns {'demoted': [...], 'promoted': [...]}
     so callers can notify the affected members.

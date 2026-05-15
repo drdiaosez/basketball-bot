@@ -23,6 +23,7 @@ HELP_TEXT = (
     "/past — recent past games\n"
     "/week — games this week (Mon-Sun)\n"
     "   <i>/week next, /week last, /week 5/18</i>\n"
+    "/spend — who's paid how much this calendar year\n"
     "/help — this message\n\n"
     "Everything else (joining, leaving, going maybe, adding guests, swaps, "
     "marking paid) happens through the buttons on each game card.\n\n"
