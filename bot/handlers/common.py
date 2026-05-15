@@ -24,6 +24,7 @@ HELP_TEXT = (
     "/week — games this week (Mon-Sun)\n"
     "   <i>/week next, /week last, /week 5/18</i>\n"
     "/spend — who's paid how much this calendar year\n"
+    "/balance — who currently owes money, broken down per game\n"
     "/help — this message\n\n"
     "Everything else (joining, leaving, going maybe, adding guests, swaps, "
     "marking paid) happens through the buttons on each game card.\n\n"

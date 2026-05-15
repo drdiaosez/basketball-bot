@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 from telegram.ext import Application, CommandHandler
 
 from . import db, chat_picker
-from .handlers import common, games, newgame, roster, spend, chat_events
+from .handlers import balance, common, games, newgame, roster, spend, chat_events
 
 
 async def amain() -> None:
@@ -56,6 +56,10 @@ async def amain() -> None:
 
     # /spend — per-member spend totals for the calendar year
     for h in spend.build_spend_handlers():
+        app.add_handler(h)
+
+    # /balance — outstanding-balance report (members + guests)
+    for h in balance.build_balance_handlers():
         app.add_handler(h)
 
     # /cancelguest, /canceledit (must come before generic text handler)

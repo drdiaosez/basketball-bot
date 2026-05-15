@@ -121,6 +121,7 @@ In the basketball group: `/newgame`, then tap **🤔 Maybe** on the card to see 
 | `/past` | Recent past games |
 | `/week [next \| last \| date]` | Games in a specific Mon-Sun week |
 | `/spend` | Per-member spend total for the current calendar year (ranked) |
+| `/balance` | Outstanding-balance report — everyone (members + guests) with unpaid confirmed signups, ranked by amount owed, with per-game breakdown |
 | `/help` | Show command list |
 
 Everything else — joining, going maybe, confirming, leaving, adding guests, swapping people in, marking paid — happens through the buttons on each game card.

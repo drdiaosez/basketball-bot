@@ -653,6 +653,57 @@ def toggle_participant_paid(participant_id: int) -> Optional[dict]:
     return set_participant_paid(participant_id, not bool(p.get("is_paid")))
 
 
+def list_unpaid_signups(chat_id: int) -> list[dict]:
+    """Return one row per unpaid confirmed signup for a chat.
+
+    A row qualifies as an outstanding balance when:
+      - p.status = 'confirmed'   (waitlist / maybe never owe)
+      - p.is_paid = 0
+      - g.chat_id matches
+      - g.status != 'cancelled'  (cancelled games clear obligations)
+      - g.payment_amount_cents > 0  (free games have nothing owed)
+
+    Both members and guests are included — the caller distinguishes them
+    via member_id (NULL for guests) and groups accordingly.
+
+    Returned dict has:
+      participant_id, member_id, member_name (NULL for guests), guest_name,
+      added_by, adder_name, game_id, scheduled_for, location, payment_amount_cents
+
+    Ordered by scheduled_for ASC so the caller can render each debtor's
+    games in chronological order without re-sorting.
+    """
+    assert _conn is not None
+    rows = _conn.execute(
+        """
+        SELECT
+            p.id          AS participant_id,
+            p.member_id   AS member_id,
+            m.display_name AS member_name,
+            p.guest_name  AS guest_name,
+            p.added_by    AS added_by,
+            adder.display_name AS adder_name,
+            g.id          AS game_id,
+            g.scheduled_for AS scheduled_for,
+            g.location    AS location,
+            g.payment_amount_cents AS payment_amount_cents
+        FROM participants p
+        JOIN games g           ON g.id = p.game_id
+        LEFT JOIN members m    ON m.telegram_id = p.member_id
+        JOIN members adder     ON adder.telegram_id = p.added_by
+        WHERE p.status = 'confirmed'
+          AND p.is_paid = 0
+          AND g.chat_id = ?
+          AND g.status != 'cancelled'
+          AND g.payment_amount_cents IS NOT NULL
+          AND g.payment_amount_cents > 0
+        ORDER BY g.scheduled_for ASC
+        """,
+        (chat_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def list_member_spend_in_range(
     chat_id: int, start: datetime, end: datetime
 ) -> list[dict]:
