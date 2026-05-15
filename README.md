@@ -61,10 +61,18 @@ nano /home/bot/basketball-bot/.env
 BOT_TOKEN=<from-BotFather>
 DB_PATH=/home/bot/basketball-bot/db.sqlite
 TIMEZONE=America/Los_Angeles
-ALLOWED_GROUP_ID=-1002345678901
 ```
 
-`ALLOWED_GROUP_ID` is your basketball group's chat ID (a negative integer). The simplest way to find it: temporarily run the bot in the foreground (`python -m bot.main`) and look at the logs as you message the group — the chat ID prints in every log line. Or use @userinfobot.
+That's it — no group ID needed. When you add the bot to your basketball group, it auto-registers the chat into its internal `chats` table and starts answering commands there. You can add it to additional groups later; each one self-registers the same way.
+
+<details>
+<summary>What about <code>ALLOWED_GROUP_ID</code>?</summary>
+
+It's a legacy single-group lockdown var inherited from the parent pickleball-bot. The current auth model uses the `chats` SQLite table (populated when the bot is added to a group); `ALLOWED_GROUP_ID` is only consulted as a fallback when the table is empty. For a fresh basketball-bot install you can ignore it entirely.
+
+Set it (e.g., `ALLOWED_GROUP_ID=-1002345678901`) only if you want extra paranoia — locking the bot to one specific group ID even before it's added there, so a misconfigured token can't accidentally answer in a wrong group. To find the chat ID: add @userinfobot to your group, or run the bot in the foreground (`python -m bot.main`) and watch the logs.
+
+</details>
 
 ### 4. Add a systemd service
 
