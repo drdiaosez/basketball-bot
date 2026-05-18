@@ -6,7 +6,7 @@ Forked from [pickleball-bot](https://github.com/drdiaosez/pickleball-bot) with t
 
 ## What it does
 
-- **Game scheduling**: `/newgame` (date, time, location, max players, optional per-person payment, notes). Multiple concurrent games supported.
+- **Game scheduling**: `/newgame` posts a card instantly using the defaults below — next Monday 8:30 PM, "Quartz Sport in Carson", 15 players, no payment, no notes. Tap ⚙ Manage on the card to tweak anything. Multiple concurrent games supported.
 - **Three-tier signups**: tap-to-join cards with **Confirmed** / **Maybe** / **Waitlist** sections.
   - Maybes don't count toward the player cap and don't owe payment. They tap **Confirm** when they're sure (or **Leave** to drop).
   - Waitlist auto-promotes to Confirmed when a slot opens.
@@ -182,7 +182,7 @@ In the basketball group: `/newgame`. The card now shows **📝 Register**, **⚙
 
 | Command | Description |
 |---|---|
-| `/newgame` | Schedule a new game |
+| `/newgame` | Post a game card with default time/place (edit later via ⚙ Manage) |
 | `/games` | List upcoming games |
 | `/mygames` | Games you're signed up for |
 | `/past` | Recent past games |

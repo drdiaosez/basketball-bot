@@ -1,4 +1,4 @@
-newgame - Schedule a new game
+newgame - Post a game card with default time/place
 games - Show upcoming games
 mygames - Show games you're signed up for
 past - Recent past games

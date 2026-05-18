@@ -1,14 +1,22 @@
-"""/newgame — a short guided conversation to schedule a game.
+"""/newgame — one-shot command that creates a game with default values.
 
-Flow:
-  1. /newgame                  → ask for date & time
-  2. user types "wed 6:30pm"   → parse, confirm, ask for location
-  3. user types location       → ask for max players (default 4, skip with /skip)
-  4. user types number or /skip → ask for notes (optional, /skip)
-  5. user types notes or /skip → create, post the game card, end
+Previously this was a multi-step ConversationHandler that asked for
+time, location, max players, payment, and notes one prompt at a time.
+That walk-through is gone: `/newgame` now creates a game immediately
+with the defaults below and posts the card. Anyone who wants to change
+anything taps **⚙ Manage** on the card and edits in the mini-app.
 
-Uses python-telegram-bot's ConversationHandler. We keep the parsing forgiving:
-date/time accepts a bunch of natural inputs; we re-prompt on bad input.
+Defaults
+────────
+  when:        the next Monday at 8:30 PM in the bot's timezone
+  location:    "Quartz Sport in Carson"
+  max_players: 15
+  payment:     none
+  notes:       none
+
+`parse_datetime` and `parse_payment` stay in this module — they're
+imported by `bot/handlers/roster.py` for the in-chat edit flow that
+still serves the old cards already sitting in chat history.
 """
 from __future__ import annotations
 
@@ -16,62 +24,133 @@ import re
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import (
-    CallbackQueryHandler,
-    CommandHandler,
-    ContextTypes,
-    ConversationHandler,
-    MessageHandler,
-    filters,
-)
+from telegram import Update
+from telegram.ext import CommandHandler, ContextTypes
 
-from .. import db, views
+from .. import db
 from ..chat_picker import resolve_chat
 from .common import touch_member
 
-# Conversation states
-ASK_WHEN, ASK_LOCATION, ASK_MAX, ASK_PAYMENT, ASK_NOTES = range(5)
 
 # ─────────────────────── defaults ─────────────────────── #
-# Pre-populated values for the /newgame flow. The user can always type
-# something else; these just save a round-trip for the common case.
+
 DEFAULT_LOCATION = "Quartz Sport in Carson"
+DEFAULT_MAX_PLAYERS = 15
 DEFAULT_TIME_WEEKDAY = 0    # Monday (datetime.weekday(): Mon=0 .. Sun=6)
 DEFAULT_TIME_HOUR = 20      # 8 PM
 DEFAULT_TIME_MINUTE = 30    # :30
 
 
 def _default_when(tz: ZoneInfo) -> datetime:
-    """The next Monday at 8:30 PM in `tz`.
+    """The *next* Monday at 8:30 PM in `tz` — never today.
 
-    'Next' = the soonest occurrence strictly after now. So a Monday at 7 PM
-    yields *today* 8:30 PM; a Monday at 9 PM yields next Monday 8:30 PM.
+    Even if you run /newgame on a Monday morning, the resulting game
+    falls on the *following* Monday. We never auto-create a same-day
+    card; if you actually want today's game, edit the time via the
+    ⚙ Manage mini-app on the posted card.
     """
     now = datetime.now(tz)
     days_ahead = (DEFAULT_TIME_WEEKDAY - now.weekday()) % 7
-    candidate = (now + timedelta(days=days_ahead)).replace(
+    if days_ahead == 0:
+        # Today is already the target weekday — roll forward a full week
+        # so the default is always strictly in the future, regardless of
+        # what time of day /newgame was invoked.
+        days_ahead = 7
+    return (now + timedelta(days=days_ahead)).replace(
         hour=DEFAULT_TIME_HOUR, minute=DEFAULT_TIME_MINUTE, second=0, microsecond=0
     )
-    if candidate <= now:
-        candidate += timedelta(days=7)
-    return candidate
 
 
-def _location_options(chat_id: int | None) -> list[str]:
-    """Top 3 location buttons for the picker.
+def _find_open_game_at(
+    chat_id: int, target_dt: datetime, tz: ZoneInfo
+) -> dict | None:
+    """Open game in this chat scheduled for the same wall-clock minute, or None.
 
-    DEFAULT_LOCATION is always offered as the first option (so it's available
-    even before this group has any games on record). Recently used locations
-    from this chat fill the remaining slots, deduped against the default.
+    Match is on the (year, month, day, hour, minute) tuple in the bot's
+    timezone — not the date alone. That way an admin who has already
+    moved Monday's game to a different time via Manage doesn't block a
+    fresh /newgame for the default 8:30 PM slot on the same day.
     """
-    recent = db.list_recent_locations(chat_id, limit=3) if chat_id else []
-    if not any(loc.strip().lower() == DEFAULT_LOCATION.strip().lower() for loc in recent):
-        recent = [DEFAULT_LOCATION] + recent
-    return recent[:3]
+    target_key = (
+        target_dt.year, target_dt.month, target_dt.day,
+        target_dt.hour, target_dt.minute,
+    )
+    for g in db.list_upcoming_games(tz=tz, chat_id=chat_id):
+        try:
+            dt = datetime.fromisoformat(g["scheduled_for"]).astimezone(tz)
+        except ValueError:
+            continue
+        if (dt.year, dt.month, dt.day, dt.hour, dt.minute) == target_key:
+            return g
+    return None
 
 
-# ─────────────────────── date parsing ─────────────────────── #
+# ─────────────────────── /newgame handler ─────────────────────── #
+
+async def cmd_newgame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Create a game with defaults and post the card.
+
+    In a group chat the card goes in the current chat. In a DM that
+    spans multiple groups, resolve_chat() pops a "which group?" picker
+    and returns None; the user reruns /newgame after picking. When the
+    command was sent in a DM and resolves to a different chat, we
+    confirm in the DM so the user knows the card was posted elsewhere.
+    """
+    from .common import gate
+    if not await gate(update):
+        return
+    await touch_member(update)
+
+    chat_id = await resolve_chat(update, context, "newgame")
+    if chat_id is None:
+        return  # picker is showing; nothing more to do this turn
+
+    tz: ZoneInfo = context.bot_data["tz"]
+    user = update.effective_user
+    default_dt = _default_when(tz)
+
+    # Duplicate-prevention: if there's already an open game in this chat
+    # scheduled for the same wall-clock minute as the default we'd post,
+    # do nothing rather than spamming the group with a near-identical
+    # card. Use ⚙ Manage on the existing card to change time/location/etc.
+    existing = _find_open_game_at(chat_id, default_dt, tz)
+    if existing:
+        from .. import views
+        when = views.format_when(existing["scheduled_for"], tz)
+        await update.effective_message.reply_text(
+            f"There's already a game on {when} at {existing['location']}. "
+            f"Tap ⚙ Manage on its card to edit it, or use /games to find it."
+        )
+        return
+
+    game_id = db.create_game(
+        scheduled_for=default_dt,
+        location=DEFAULT_LOCATION,
+        organizer_id=user.id,
+        max_players=DEFAULT_MAX_PLAYERS,
+        notes=None,
+        chat_id=chat_id,
+        payment_amount_cents=None,
+    )
+
+    # Local import to keep the handlers package's import graph acyclic:
+    # roster imports parse_datetime / parse_payment from this module.
+    from . import roster
+    await roster.post_game_card(context, chat_id, game_id)
+
+    # If the command was issued in a chat OTHER than the game's chat
+    # (typical for a DM → group flow), echo a short confirmation back
+    # to the issuer so they're not staring at a silent prompt.
+    issuing_chat = update.effective_chat
+    if issuing_chat and issuing_chat.id != chat_id:
+        await update.effective_message.reply_text(
+            "✓ Game posted. Tap ⚙ Manage on the card to change time, "
+            "location, max players, payment, or notes."
+        )
+
+
+# ─────────────────────── parsers used by roster ─────────────────────── #
+# Kept in this module so the in-chat edit flow on old cards still works.
 
 DAY_NAMES = {
     "mon": 0, "monday": 0,
@@ -202,211 +281,6 @@ def parse_datetime(text: str, tz: ZoneInfo) -> datetime | None:
     return dt
 
 
-# ─────────────────────── handlers ─────────────────────── #
-
-async def start_newgame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    from .common import gate
-    if not await gate(update):
-        return ConversationHandler.END
-    await touch_member(update)
-    # Determine which chat this game belongs to. In a group, that's the
-    # current chat. In a DM, this may pop a picker — if so, bail out of the
-    # conversation; the user runs /newgame again after picking.
-    chat_id = await resolve_chat(update, context, "newgame")
-    if chat_id is None:
-        return ConversationHandler.END
-
-    tz: ZoneInfo = context.bot_data["tz"]
-    default_dt = _default_when(tz)
-
-    context.user_data["newgame"] = {}
-    context.user_data["newgame_chat_id"] = chat_id
-    # Store as ISO so we don't carry a live datetime through user_data across
-    # a tz/process boundary; the callback handler re-parses it.
-    context.user_data["newgame_default_when"] = default_dt.isoformat()
-
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton(
-            f"🗓 {views.format_when(default_dt.isoformat(), tz)}",
-            callback_data="newwhen:default",
-        ),
-    ]])
-
-    await update.effective_message.reply_html(
-        "📅 <b>When is the game?</b>\n\n"
-        "Tap the default above, or type one:\n"
-        "• <code>wed 7</code> (= 7am)\n"
-        "• <code>tomorrow 6:30</code> (= 6:30am)\n"
-        "• <code>5/14 8am</code>\n"
-        "• <code>fri 7pm</code> (explicit for evening)\n\n"
-        "Send /cancel to abort.",
-        reply_markup=kb,
-    )
-    return ASK_WHEN
-
-
-async def picked_when(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle a tap on the default-time button in the ASK_WHEN step.
-
-    Currently only `newwhen:default` is offered. If the callback fires with an
-    unknown payload (e.g. stale data after a bot restart cleared user_data)
-    we stay in ASK_WHEN and let the user type a time.
-    """
-    query = update.callback_query
-    await query.answer()
-    payload = (query.data or "").split(":", 1)[1] if ":" in (query.data or "") else ""
-    if payload != "default":
-        return ASK_WHEN
-
-    default_iso = context.user_data.get("newgame_default_when")
-    if not default_iso:
-        await query.message.reply_text(
-            "That option expired. Type a date/time, e.g. <code>mon 8:30pm</code>.",
-            parse_mode="HTML",
-        )
-        return ASK_WHEN
-    try:
-        dt = datetime.fromisoformat(default_iso)
-    except ValueError:
-        await query.message.reply_text("Default expired. Type a date/time instead.")
-        return ASK_WHEN
-
-    tz: ZoneInfo = context.bot_data["tz"]
-    # Strip the keyboard so the user can't double-tap, then continue to
-    # location step.
-    try:
-        await query.edit_message_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-    return await _advance_to_location(query.message, context, dt, tz)
-
-
-async def got_when(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    tz: ZoneInfo = context.bot_data["tz"]
-    text = update.effective_message.text or ""
-    dt = parse_datetime(text, tz)
-    if dt is None:
-        await update.effective_message.reply_text(
-            "I couldn't read that. Try something like 'wed 7' or 'tomorrow 6:30am'."
-        )
-        return ASK_WHEN
-    if dt < datetime.now(tz) - timedelta(minutes=10):
-        await update.effective_message.reply_text(
-            "That looks like it's in the past. Try again?"
-        )
-        return ASK_WHEN
-
-    return await _advance_to_location(update.effective_message, context, dt, tz)
-
-
-async def _advance_to_location(message, context: ContextTypes.DEFAULT_TYPE, dt: datetime, tz: ZoneInfo) -> int:
-    """Common follow-up after a time has been chosen (typed OR tapped from
-    the default button). Stores the time and prompts for location.
-    """
-    context.user_data["newgame"]["scheduled_for"] = dt
-
-    chat_id = context.user_data.get("newgame_chat_id")
-    options = _location_options(chat_id)
-    context.user_data["newgame_recent_locations"] = options
-
-    confirm = f"Got it: <b>{views.format_when(dt.isoformat(), tz)}</b>\n\n"
-    await message.reply_html(
-        confirm + "📍 <b>Where?</b> Pick a spot or choose a different location.",
-        reply_markup=views.recent_locations_keyboard(options),
-    )
-    return ASK_LOCATION
-
-
-async def picked_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle a tap on the recent-locations keyboard.
-
-    `newloc:<idx>` — picks recent_locations[idx] and advances to ASK_MAX.
-    `newloc:new`   — user wants to type a fresh location; stay in ASK_LOCATION
-                     and wait for the text handler.
-    """
-    query = update.callback_query
-    await query.answer()
-    payload = (query.data or "").split(":", 1)[1] if ":" in (query.data or "") else ""
-
-    if payload == "new":
-        # Drop the keyboard so the user can't double-tap, then prompt for text.
-        try:
-            await query.edit_message_reply_markup(reply_markup=None)
-        except Exception:
-            pass
-        await query.message.reply_html(
-            "📍 <b>Type the location.</b> (e.g. <code>Mission Rec Center, Court 2</code>)"
-        )
-        return ASK_LOCATION
-
-    try:
-        idx = int(payload)
-    except ValueError:
-        return ASK_LOCATION
-    recent: list[str] = context.user_data.get("newgame_recent_locations") or []
-    if not (0 <= idx < len(recent)):
-        # Stale callback (user_data cleared, bot restarted) — re-prompt by text.
-        await query.message.reply_text(
-            "That option expired. Type the location instead."
-        )
-        return ASK_LOCATION
-
-    location = recent[idx]
-    context.user_data["newgame"]["location"] = location
-    context.user_data.pop("newgame_recent_locations", None)
-    # Strip the keyboard from the prompt and show the picked location inline.
-    from telegram.helpers import escape
-    try:
-        await query.edit_message_text(
-            f"📍 <b>{escape(location)}</b>", parse_mode="HTML"
-        )
-    except Exception:
-        pass
-    await query.message.reply_html(
-        "👥 <b>Max players?</b> (Send a number, or /skip for 15)"
-    )
-    return ASK_MAX
-
-
-async def got_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    location = (update.effective_message.text or "").strip()
-    if not location:
-        await update.effective_message.reply_text("Need a location. Try again.")
-        return ASK_LOCATION
-    if len(location) > 100:
-        await update.effective_message.reply_text("Keep it under 100 chars.")
-        return ASK_LOCATION
-
-    context.user_data["newgame"]["location"] = location
-    context.user_data.pop("newgame_recent_locations", None)
-    await update.effective_message.reply_html(
-        "👥 <b>Max players?</b> (Send a number, or /skip for 15)"
-    )
-    return ASK_MAX
-
-
-async def got_max(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = (update.effective_message.text or "").strip()
-    if text.startswith("/skip"):
-        context.user_data["newgame"]["max_players"] = 15
-    else:
-        try:
-            n = int(text)
-            if not (2 <= n <= 32):
-                raise ValueError
-            context.user_data["newgame"]["max_players"] = n
-        except ValueError:
-            await update.effective_message.reply_text("Send a number between 2 and 32, or /skip.")
-            return ASK_MAX
-
-    await update.effective_message.reply_html(
-        "💰 <b>Payment per person?</b>\n\n"
-        "Send an amount like <code>5</code>, <code>$7.50</code>, or <code>10.00</code>. "
-        "Send /skip if there's nothing to collect."
-    )
-    return ASK_PAYMENT
-
-
 # Accept "$5", "5", "5.50", "$5.50", "5,00". Reject anything else as bad input.
 _PAYMENT_RE = re.compile(r"^\s*\$?\s*(\d+)(?:[.,](\d{1,2}))?\s*$")
 
@@ -414,10 +288,8 @@ _PAYMENT_RE = re.compile(r"^\s*\$?\s*(\d+)(?:[.,](\d{1,2}))?\s*$")
 def parse_payment(text: str) -> int | None:
     """Parse a money string into cents, or return None for unparseable input.
 
-    Returns 0 for explicit zero ("0", "$0", "0.00") so the caller can distinguish
-    that case from a parse failure if it cares. The newgame flow treats 0 the
-    same as /skip (stored as NULL), but the edit flow uses 0 as an explicit
-    "clear the amount" signal.
+    Returns 0 for explicit zero ("0", "$0", "0.00") so the caller can
+    distinguish that case from a parse failure if it cares.
     """
     m = _PAYMENT_RE.match(text)
     if not m:
@@ -431,90 +303,8 @@ def parse_payment(text: str) -> int | None:
     return dollars * 100 + cents
 
 
-async def got_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = (update.effective_message.text or "").strip()
-    if text.startswith("/skip"):
-        context.user_data["newgame"]["payment_amount_cents"] = None
-    else:
-        cents = parse_payment(text)
-        if cents is None:
-            await update.effective_message.reply_text(
-                "Couldn't read that. Send an amount like '5', '$7.50', or /skip."
-            )
-            return ASK_PAYMENT
-        # Treat $0 as "no payment" — same as /skip — so the card stays clean.
-        context.user_data["newgame"]["payment_amount_cents"] = cents if cents > 0 else None
+# ─────────────────────── handler registration ─────────────────────── #
 
-    await update.effective_message.reply_html(
-        "📝 <b>Any notes?</b> (e.g. \"bring a light + dark shirt\") — or /skip"
-    )
-    return ASK_NOTES
-
-
-async def got_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = (update.effective_message.text or "").strip()
-    notes = None if text.startswith("/skip") else text[:200]
-
-    data = context.user_data["newgame"]
-    user = update.effective_user
-    chat_id = context.user_data.get("newgame_chat_id")
-
-    game_id = db.create_game(
-        scheduled_for=data["scheduled_for"],
-        location=data["location"],
-        organizer_id=user.id,
-        max_players=data["max_players"],
-        notes=notes,
-        chat_id=chat_id,
-        payment_amount_cents=data.get("payment_amount_cents"),
-    )
-
-    # Post the game card and remember its message_id so we can edit later
-    from . import roster  # local import to avoid circular
-    await roster.post_game_card(context, chat_id, game_id)
-
-    await update.effective_message.reply_text("✓ Game posted above.")
-    context.user_data.pop("newgame", None)
-    context.user_data.pop("newgame_chat_id", None)
-    context.user_data.pop("newgame_recent_locations", None)
-    context.user_data.pop("newgame_default_when", None)
-    return ConversationHandler.END
-
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.pop("newgame", None)
-    context.user_data.pop("newgame_chat_id", None)
-    context.user_data.pop("newgame_recent_locations", None)
-    context.user_data.pop("newgame_default_when", None)
-    await update.effective_message.reply_text("Cancelled.")
-    return ConversationHandler.END
-
-
-def build_newgame_handler() -> ConversationHandler:
-    return ConversationHandler(
-        entry_points=[CommandHandler("newgame", start_newgame)],
-        states={
-            ASK_WHEN: [
-                CallbackQueryHandler(picked_when, pattern=r"^newwhen:"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, got_when),
-            ],
-            ASK_LOCATION: [
-                CallbackQueryHandler(picked_location, pattern=r"^newloc:"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, got_location),
-            ],
-            ASK_MAX: [
-                MessageHandler(filters.Regex(r"^/skip"), got_max),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, got_max),
-            ],
-            ASK_PAYMENT: [
-                MessageHandler(filters.Regex(r"^/skip"), got_payment),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, got_payment),
-            ],
-            ASK_NOTES: [
-                MessageHandler(filters.Regex(r"^/skip"), got_notes),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, got_notes),
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_chat=False,  # so the flow follows a user across chats if needed
-    )
+def build_newgame_handler() -> CommandHandler:
+    """Returned to main.py which registers it with the Application."""
+    return CommandHandler("newgame", cmd_newgame)
