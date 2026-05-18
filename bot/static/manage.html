@@ -65,7 +65,24 @@
   }
   .pill b { color: var(--text); }
 
-  /* Participant rows */
+  /* Participant rows
+     ─────────────────
+     Layout priority: show the full name on one line. If buttons can't
+     fit alongside it, the buttons wrap to a new line as a group rather
+     than the name truncating. Achieved by:
+       • .p-info keeps its default min-width (auto = content min-content),
+         so the name's nowrap width is treated as the flex item's
+         minimum — it won't shrink-and-ellipsis to make buttons fit.
+       • .p-name has nowrap but no overflow:hidden / text-overflow,
+         so it never ellipses.
+       • .p-row has flex-wrap:wrap, which lets .p-actions push to a new
+         line whenever the name + buttons exceed the row's width.
+       • .p-actions uses margin-left:auto so it right-aligns when it
+         stays on the same row, and falls to the next line naturally
+         when it doesn't.
+     If the name itself is wider than the entire card (very rare), the
+     row scrolls horizontally rather than truncating — easier to read
+     than ellipsis. */
   .p-row {
     display: flex;
     align-items: center;
@@ -75,13 +92,18 @@
     flex-wrap: wrap;
   }
   .p-row:first-of-type { border-top: none; }
-  .p-info { flex: 1; min-width: 0; }
+  .p-info { flex: 1 1 auto; }
   .p-name {
     font-size: 15px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .p-meta { color: var(--hint); font-size: 12px; }
-  .p-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .p-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-left: auto;
+  }
 
   /* Buttons */
   .btn {
