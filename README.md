@@ -6,7 +6,7 @@ Forked from [pickleball-bot](https://github.com/drdiaosez/pickleball-bot) with t
 
 ## What it does
 
-- **Game scheduling**: `/newgame` posts a card instantly using the defaults below — next Monday 8:30 PM, "Quartz Sport in Carson", 15 players, no payment, no notes. Tap ⚙ Manage on the card to tweak anything. Multiple concurrent games supported.
+- **Game scheduling**: `/newgame` posts a card instantly using the defaults below — next Monday 8:30 PM, 90-minute duration (card shows "8:30 PM - 10:00 PM"), "Quartz Sport in Carson", 15 players, no payment, no notes. Running `/newgame` again when a game already exists at the same date+time is a no-op. Tap ⚙ Manage on the card to tweak anything. Multiple concurrent games supported.
 - **Three-tier signups**: tap-to-join cards with **Confirmed** / **Maybe** / **Waitlist** sections.
   - Maybes don't count toward the player cap and don't owe payment. They tap **Confirm** when they're sure (or **Leave** to drop).
   - Waitlist auto-promotes to Confirmed when a slot opens.

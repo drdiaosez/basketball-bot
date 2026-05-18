@@ -9,6 +9,7 @@ anything taps **⚙ Manage** on the card and edits in the mini-app.
 Defaults
 ────────
   when:        the next Monday at 8:30 PM in the bot's timezone
+  duration:    90 minutes (1.5 hours) → card shows "8:30 PM - 10:00 PM"
   location:    "Quartz Sport in Carson"
   max_players: 15
   payment:     none
@@ -36,6 +37,7 @@ from .common import touch_member
 
 DEFAULT_LOCATION = "Quartz Sport in Carson"
 DEFAULT_MAX_PLAYERS = 15
+DEFAULT_DURATION_MINUTES = 90   # 1.5 hours — card shows 8:30 PM - 10:00 PM
 DEFAULT_TIME_WEEKDAY = 0    # Monday (datetime.weekday(): Mon=0 .. Sun=6)
 DEFAULT_TIME_HOUR = 20      # 8 PM
 DEFAULT_TIME_MINUTE = 30    # :30
@@ -116,7 +118,9 @@ async def cmd_newgame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     existing = _find_open_game_at(chat_id, default_dt, tz)
     if existing:
         from .. import views
-        when = views.format_when(existing["scheduled_for"], tz)
+        when = views.format_when(
+            existing["scheduled_for"], tz, existing.get("duration_minutes"),
+        )
         await update.effective_message.reply_text(
             f"There's already a game on {when} at {existing['location']}. "
             f"Tap ⚙ Manage on its card to edit it, or use /games to find it."
@@ -131,6 +135,7 @@ async def cmd_newgame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         notes=None,
         chat_id=chat_id,
         payment_amount_cents=None,
+        duration_minutes=DEFAULT_DURATION_MINUTES,
     )
 
     # Local import to keep the handlers package's import graph acyclic:

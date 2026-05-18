@@ -49,7 +49,8 @@ def _create_schema() -> None:
 
         CREATE TABLE IF NOT EXISTS games (
             id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-            scheduled_for         TEXT NOT NULL,         -- ISO timestamp
+            scheduled_for         TEXT NOT NULL,         -- ISO timestamp (start time)
+            duration_minutes      INTEGER NOT NULL DEFAULT 90,  -- how long the game runs
             location              TEXT NOT NULL,
             organizer_id          INTEGER NOT NULL REFERENCES members(telegram_id),
             max_players           INTEGER NOT NULL DEFAULT 15,
@@ -346,14 +347,18 @@ def create_game(
     notes: Optional[str] = None,
     chat_id: Optional[int] = None,
     payment_amount_cents: Optional[int] = None,
+    duration_minutes: int = 90,
 ) -> int:
     assert _conn is not None
     cur = _conn.execute(
         """
-        INSERT INTO games (scheduled_for, location, organizer_id, max_players, notes, chat_id, payment_amount_cents)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO games (scheduled_for, duration_minutes, location, organizer_id, max_players, notes, chat_id, payment_amount_cents)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (scheduled_for.isoformat(), location, organizer_id, max_players, notes, chat_id, payment_amount_cents),
+        (
+            scheduled_for.isoformat(), duration_minutes, location, organizer_id,
+            max_players, notes, chat_id, payment_amount_cents,
+        ),
     )
     return cur.lastrowid
 
@@ -600,6 +605,15 @@ def update_game_time(game_id: int, scheduled_for: datetime) -> None:
     _conn.execute(
         "UPDATE games SET scheduled_for = ? WHERE id = ?",
         (scheduled_for.isoformat(), game_id),
+    )
+
+
+def update_game_duration(game_id: int, duration_minutes: int) -> None:
+    """Set how long the game runs, in minutes. Caller validates the range."""
+    assert _conn is not None
+    _conn.execute(
+        "UPDATE games SET duration_minutes = ? WHERE id = ?",
+        (int(duration_minutes), game_id),
     )
 
 

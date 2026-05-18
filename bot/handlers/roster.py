@@ -841,7 +841,8 @@ async def on_edit_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         db.update_game_time(game_id, dt)
         context.user_data.pop("pending_edit", None)
         await update.effective_message.reply_html(
-            f"✓ Time updated to <b>{views.format_when(dt.isoformat(), tz)}</b>."
+            f"✓ Time updated to <b>"
+            f"{views.format_when(dt.isoformat(), tz, game.get('duration_minutes'))}</b>."
         )
         await _notify_time_change(context, game_id, dt)
 
@@ -964,15 +965,17 @@ async def _do_delete(
 
     db.delete_game(game_id)
 
+    when = views.format_when(
+        game["scheduled_for"], tz, game.get("duration_minutes"),
+    )
     await update.callback_query.edit_message_text(
-        f"🗑 Game deleted: <s>{views.format_when(game['scheduled_for'], tz)} "
-        f"@ {game['location']}</s>",
+        f"🗑 Game deleted: <s>{when} @ {game['location']}</s>",
         parse_mode=ParseMode.HTML,
     )
 
     # DM everyone who was signed up
     text = (
-        f"🗑 The game on <b>{views.format_when(game['scheduled_for'], tz)}</b> "
+        f"🗑 The game on <b>{when}</b> "
         f"@ {game['location']} was deleted by "
         f"{update.effective_user.first_name or update.effective_user.username}."
     )
@@ -996,7 +999,7 @@ async def _notify_time_change(
     participants = db.get_participants(game_id)
     text = (
         f"📅 The game at {game['location']} has been rescheduled to "
-        f"<b>{views.format_when(new_dt.isoformat(), tz)}</b>."
+        f"<b>{views.format_when(new_dt.isoformat(), tz, game.get('duration_minutes'))}</b>."
     )
     for p in participants:
         if p.get("member_id"):
@@ -1034,7 +1037,7 @@ async def _show_member_picker(
     chat_id = game.get("chat_id")
     members = db.list_members_not_in_game(game_id, chat_id=chat_id)
     tz = context.bot_data["tz"]
-    when = views.format_when(game["scheduled_for"], tz)
+    when = views.format_when(game["scheduled_for"], tz, game.get("duration_minutes"))
 
     if not members:
         text = (
@@ -1114,7 +1117,9 @@ async def _do_add_member(
         try:
             tz = context.bot_data["tz"]
             game = db.get_game(game_id)
-            when = views.format_when(game["scheduled_for"], tz)
+            when = views.format_when(
+                game["scheduled_for"], tz, game.get("duration_minutes"),
+            )
             await context.bot.send_message(
                 chat_id=target_member_id,
                 text=(
@@ -1143,7 +1148,8 @@ async def _notify_promoted(
         return
     text = (
         f"🎉 You're <b>in</b> for the game on "
-        f"{views.format_when(game['scheduled_for'], tz)} @ {game['location']}."
+        f"{views.format_when(game['scheduled_for'], tz, game.get('duration_minutes'))} "
+        f"@ {game['location']}."
     )
     try:
         await context.bot.send_message(
@@ -1165,7 +1171,8 @@ async def _notify_bumped(
         return
     text = (
         f"⚠ You've been moved to the <b>waitlist</b> for the game on "
-        f"{views.format_when(game['scheduled_for'], tz)} @ {game['location']}.\n\n"
+        f"{views.format_when(game['scheduled_for'], tz, game.get('duration_minutes'))} "
+        f"@ {game['location']}.\n\n"
         f"You're now #1 on the waitlist."
     )
     try:

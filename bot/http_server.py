@@ -247,7 +247,10 @@ async def _build_game_state(
         "game": {
             "id": game["id"],
             "scheduled_for": game["scheduled_for"],
-            "scheduled_for_label": views.format_when(game["scheduled_for"], tz),
+            "scheduled_for_label": views.format_when(
+                game["scheduled_for"], tz, game.get("duration_minutes"),
+            ),
+            "duration_minutes": game.get("duration_minutes"),
             "location": game["location"],
             "organizer_name": organizer_name,
             "max_players": game["max_players"],
@@ -633,6 +636,7 @@ async def admin_patch_game(request: web.Request) -> web.Response:
 
     body keys (any subset):
       • scheduled_for      ISO-8601 string parsed as the new datetime
+      • duration_minutes   int 15..600  (how long the game runs)
       • location           non-empty string up to 100 chars
       • max_players        int 2..32
       • notes              string up to 200 chars; pass "" or null to clear
@@ -663,6 +667,18 @@ async def admin_patch_game(request: web.Request) -> web.Response:
         if dt < datetime.now(tz) - timedelta(minutes=10):
             return web.json_response({"error": "time is in the past"}, status=400)
         db.update_game_time(game["id"], dt)
+
+    if "duration_minutes" in body:
+        try:
+            mins = int(body["duration_minutes"])
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad duration_minutes"}, status=400)
+        # 15 min lower bound rules out the "0" / "1 minute" misclick;
+        # 600 min (10h) upper bound rules out runaway values without
+        # constraining real-world usage.
+        if not (15 <= mins <= 600):
+            return web.json_response({"error": "duration_minutes 15-600"}, status=400)
+        db.update_game_duration(game["id"], mins)
 
     if "location" in body:
         loc = str(body["location"] or "").strip()
@@ -729,8 +745,11 @@ async def admin_delete_game(request: web.Request) -> web.Response:
     # don't need a chat-level confirmation. Anyone signed up gets DM'd.
     actor = db.get_member(actor_id)
     actor_name = actor["display_name"] if actor else "An admin"
+    when = views.format_when(
+        game["scheduled_for"], tz, game.get("duration_minutes"),
+    )
     text = (
-        f"🗑 The game on <b>{views.format_when(game['scheduled_for'], tz)}</b> "
+        f"🗑 The game on <b>{when}</b> "
         f"@ {game['location']} was deleted by {actor_name}."
     )
     for p in affected:
@@ -750,7 +769,7 @@ async def admin_delete_game(request: web.Request) -> web.Response:
                 chat_id=game["chat_id"],
                 message_id=game["message_id"],
                 text=(
-                    f"🗑 Game deleted: <s>{views.format_when(game['scheduled_for'], tz)} "
+                    f"🗑 Game deleted: <s>{when} "
                     f"@ {game['location']}</s>"
                 ),
                 parse_mode="HTML",

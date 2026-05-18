@@ -6,7 +6,7 @@ contain underscores or asterisks).
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -33,10 +33,25 @@ def _miniapp_url(bot_username: str, short_name: str, game_id: int) -> str:
 
 # ─────────────────────── time formatting ─────────────────────── #
 
-def format_when(iso_string: str, tz: ZoneInfo) -> str:
+def format_when(
+    iso_string: str, tz: ZoneInfo, duration_minutes: Optional[int] = None
+) -> str:
+    """Render a game's start time, optionally with an end time appended.
+
+    Without duration: "Wed May 14 · 6:30 PM"
+    With duration:    "Wed May 14 · 6:30 PM - 8:00 PM"
+
+    A non-positive duration is treated as "unknown" and the end time is
+    omitted, matching the no-arg behavior. Callers that have the game
+    dict on hand should always pass `game["duration_minutes"]` so the
+    card shows the end time.
+    """
     dt = datetime.fromisoformat(iso_string).astimezone(tz)
-    # e.g. "Wed May 14 · 6:30 PM"
-    return dt.strftime("%a %b %-d · %-I:%M %p")
+    base = dt.strftime("%a %b %-d · %-I:%M %p")
+    if duration_minutes and duration_minutes > 0:
+        end = (dt + timedelta(minutes=int(duration_minutes))).strftime("%-I:%M %p")
+        return f"{base} - {end}"
+    return base
 
 
 def format_when_short(iso_string: str, tz: ZoneInfo) -> str:
@@ -94,7 +109,9 @@ def render_game_card(game: dict, participants: list[dict], tz: ZoneInfo, organiz
     has_payment = game_has_payment(game)
 
     lines = []
-    lines.append(f"🏀 <b>{format_when(game['scheduled_for'], tz)}</b>")
+    lines.append(
+        f"🏀 <b>{format_when(game['scheduled_for'], tz, game.get('duration_minutes'))}</b>"
+    )
     lines.append(f"📍 {escape(game['location'])}")
     lines.append(f"<i>Organized by {escape(organizer_name)}</i>")
     if has_payment:

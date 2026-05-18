@@ -238,9 +238,25 @@ def _003_payment_tracking(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE participants ADD COLUMN is_paid INTEGER NOT NULL DEFAULT 0")
 
 
+# ─────────────────────── 004: game duration ───────────────────────
+
+def _004_game_duration(conn: sqlite3.Connection) -> None:
+    """Add games.duration_minutes — how long the game runs.
+
+    Used by the card renderer to show "start - end" times. Defaults to
+    90 (1.5 hours) for both new rows and back-filled existing rows.
+    """
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(games)").fetchall()}
+    if "duration_minutes" not in cols:
+        conn.execute(
+            "ALTER TABLE games ADD COLUMN duration_minutes INTEGER NOT NULL DEFAULT 90"
+        )
+
+
 # Append future migrations here as ("003_name", _003_func), etc.
 MIGRATIONS: list[tuple[str, Callable[[sqlite3.Connection], None]]] = [
     ("001_multi_chat_schema", _001_multi_chat_schema),
     ("002_games_chat_id_not_null", _002_games_chat_id_not_null),
     ("003_payment_tracking", _003_payment_tracking),
+    ("004_game_duration", _004_game_duration),
 ]
