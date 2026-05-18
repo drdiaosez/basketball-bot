@@ -38,7 +38,7 @@ from zoneinfo import ZoneInfo
 from aiohttp import web
 from telegram import Bot
 
-from . import db, views, admins
+from . import db, views, admins, notifications
 
 log = logging.getLogger(__name__)
 
@@ -296,6 +296,30 @@ async def _build_game_state(
 # Card refresher
 # ─────────────────────────────────────────────
 
+async def _notify_diffs(
+    request: web.Request, game_id: int, before: list[dict], actor_id: int
+) -> None:
+    """Diff `before` against current state and DM affected members.
+
+    Keeps the call sites tidy — each mutating endpoint does
+    `before = db.get_participants(...)` upfront, then calls this after
+    the mutation. Errors are swallowed: DM failures must never break a
+    user-facing API call.
+    """
+    try:
+        after = db.get_participants(game_id)
+        await notifications.diff_and_notify(
+            bot=request.app["bot"],
+            tz=request.app["tz"],
+            game_id=game_id,
+            before=before,
+            after=after,
+            actor_id=actor_id,
+        )
+    except Exception as e:
+        log.warning("diff_and_notify failed for game %s: %s", game_id, e)
+
+
 async def _refresh_card(request: web.Request, game_id: int) -> None:
     """Re-render the game card in the group after a mutating API call.
 
@@ -348,6 +372,7 @@ async def post_self_register(request: web.Request) -> web.Response:
         return web.json_response({"error": "bad action"}, status=400)
 
     existing = db.member_is_in_game(game["id"], user_id)
+    before = db.get_participants(game["id"])
 
     try:
         if action == "leave":
@@ -381,6 +406,10 @@ async def post_self_register(request: web.Request) -> web.Response:
     except ValueError as e:
         return web.json_response({"error": str(e)}, status=400)
 
+    # Self-action by `user_id`, but a self-leave can auto-promote the
+    # waitlist top — that promoted person is somebody else and needs a
+    # DM. The diff helper handles all of that.
+    await _notify_diffs(request, game["id"], before, user_id)
     await _refresh_card(request, game["id"])
     payload = await _build_game_state(request)
     return web.json_response(payload)
@@ -402,11 +431,13 @@ async def post_self_guest(request: web.Request) -> web.Response:
     if not name or len(name) > 40:
         return web.json_response({"error": "name must be 1-40 chars"}, status=400)
 
+    before = db.get_participants(game["id"])
     try:
         db.add_participant(game["id"], added_by=user_id, guest_name=name)
     except ValueError as e:
         return web.json_response({"error": str(e)}, status=400)
 
+    await _notify_diffs(request, game["id"], before, user_id)
     await _refresh_card(request, game["id"])
     payload = await _build_game_state(request)
     return web.json_response(payload)
@@ -432,7 +463,9 @@ async def delete_self_guest(request: web.Request) -> web.Response:
     if p.get("added_by") != user_id:
         return web.json_response({"error": "not your guest"}, status=403)
 
+    before = db.get_participants(game["id"])
     db.remove_participant(pid)
+    await _notify_diffs(request, game["id"], before, user_id)
     await _refresh_card(request, game["id"])
     payload = await _build_game_state(request)
     return web.json_response(payload)
@@ -465,11 +498,13 @@ async def admin_add_member(request: web.Request) -> web.Response:
     if chat_id is not None and db.get_chat_member(chat_id, target) is None:
         return web.json_response({"error": "not in this chat"}, status=400)
 
+    before = db.get_participants(game["id"])
     try:
         db.add_participant(game["id"], added_by=user_id, member_id=target)
     except ValueError as e:
         return web.json_response({"error": str(e)}, status=400)
 
+    await _notify_diffs(request, game["id"], before, user_id)
     await _refresh_card(request, game["id"])
     payload = await _build_game_state(request)
     return web.json_response(payload)
@@ -498,11 +533,13 @@ async def admin_add_guest(request: web.Request) -> web.Response:
     if chat_id is not None and db.get_chat_member(chat_id, added_by) is None:
         return web.json_response({"error": "adder not in chat"}, status=400)
 
+    before = db.get_participants(game["id"])
     try:
         db.add_participant(game["id"], added_by=added_by, guest_name=name)
     except ValueError as e:
         return web.json_response({"error": str(e)}, status=400)
 
+    await _notify_diffs(request, game["id"], before, actor_id)
     await _refresh_card(request, game["id"])
     payload = await _build_game_state(request)
     return web.json_response(payload)
@@ -522,7 +559,10 @@ async def admin_remove_participant(request: web.Request) -> web.Response:
     p = db.get_participant(pid)
     if not p or p["game_id"] != game["id"]:
         return web.json_response({"error": "not found"}, status=404)
+    actor_id: int = request["user_id"]
+    before = db.get_participants(game["id"])
     db.remove_participant(pid)
+    await _notify_diffs(request, game["id"], before, actor_id)
     await _refresh_card(request, game["id"])
     payload = await _build_game_state(request)
     return web.json_response(payload)
@@ -565,6 +605,7 @@ async def admin_move_participant(request: web.Request) -> web.Response:
         payload = await _build_game_state(request)
         return web.json_response(payload)
 
+    before = db.get_participants(game["id"])
     try:
         if new_status == "confirmed":
             if p["status"] == "maybe":
@@ -626,6 +667,7 @@ async def admin_move_participant(request: web.Request) -> web.Response:
     except ValueError as e:
         return web.json_response({"error": str(e)}, status=400)
 
+    await _notify_diffs(request, game["id"], before, actor_id)
     await _refresh_card(request, game["id"])
     payload = await _build_game_state(request)
     return web.json_response(payload)
@@ -654,6 +696,12 @@ async def admin_patch_game(request: web.Request) -> web.Response:
     from datetime import datetime, timedelta
     tz: ZoneInfo = request.app["tz"]
     bot: Bot = request.app["bot"]
+    actor_id: int = request["user_id"]
+
+    # Snapshot participants before any patch is applied. Only
+    # max_players actually shuffles the roster, but we always diff so
+    # behavior stays predictable when more fields gain side-effects.
+    before = db.get_participants(game["id"])
 
     # Apply each field independently so partial updates work.
     if "scheduled_for" in body:
@@ -722,6 +770,7 @@ async def admin_patch_game(request: web.Request) -> web.Response:
 
     # Re-fetch the game so subsequent state-building uses the new values.
     request["game"] = db.get_game(game["id"])
+    await _notify_diffs(request, game["id"], before, actor_id)
     await _refresh_card(request, game["id"])
     payload = await _build_game_state(request)
     return web.json_response(payload)

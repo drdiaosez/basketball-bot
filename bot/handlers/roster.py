@@ -40,8 +40,29 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.ext import CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
-from .. import db, views
+from .. import db, views, notifications
 from .common import touch_member
+
+
+async def _notify(context: ContextTypes.DEFAULT_TYPE, game_id: int, before: list[dict], actor_id: int) -> None:
+    """Shared shim that wraps notifications.diff_and_notify in a try.
+
+    Used by every legacy in-chat handler that mutates participants so
+    the DM behavior matches the mini-app paths. DM failures must never
+    break a user-facing callback handler.
+    """
+    try:
+        after = db.get_participants(game_id)
+        await notifications.diff_and_notify(
+            bot=context.bot,
+            tz=context.bot_data["tz"],
+            game_id=game_id,
+            before=before,
+            after=after,
+            actor_id=actor_id,
+        )
+    except Exception as e:
+        log.info("legacy diff_and_notify failed for game %s: %s", game_id, e)
 
 log = logging.getLogger(__name__)
 
@@ -367,6 +388,7 @@ async def _handle_join(
     if not game:
         await update.callback_query.answer("Game not found.", show_alert=True)
         return
+    before = db.get_participants(game_id)
     try:
         result = db.add_participant(game_id, added_by=user_id, member_id=user_id)
     except ValueError as e:
@@ -385,6 +407,7 @@ async def _handle_join(
     else:
         await update.callback_query.answer(f"Waitlisted — position {result['position']}.")
     await render_card_in_place(context, update, game_id, user_id)
+    await _notify(context, game_id, before, user_id)
 
 
 async def _handle_leave(
@@ -394,12 +417,11 @@ async def _handle_leave(
     if not existing:
         await update.callback_query.answer("You're not on this game.", show_alert=True)
         return
-    promoted = db.remove_participant(existing["id"])
+    before = db.get_participants(game_id)
+    db.remove_participant(existing["id"])
     await update.callback_query.answer("Removed.")
     await render_card_in_place(context, update, game_id, user_id)
-
-    if promoted and promoted.get("member_id"):
-        await _notify_promoted(context, game_id, promoted)
+    await _notify(context, game_id, before, user_id)
 
 
 async def _handle_maybe(
@@ -410,6 +432,7 @@ async def _handle_maybe(
     if not game:
         await update.callback_query.answer("Game not found.", show_alert=True)
         return
+    before = db.get_participants(game_id)
     try:
         db.add_maybe(game_id, added_by=user_id, member_id=user_id)
     except ValueError as e:
@@ -426,6 +449,7 @@ async def _handle_maybe(
 
     await update.callback_query.answer("Marked you as 'maybe'. Confirm later to lock in.")
     await render_card_in_place(context, update, game_id, user_id)
+    await _notify(context, game_id, before, user_id)
 
 
 async def _handle_confirm_self(
@@ -442,6 +466,7 @@ async def _handle_confirm_self(
             f"You're already {existing['status']}.", show_alert=True,
         )
         return
+    before = db.get_participants(game_id)
     updated = db.confirm_from_maybe(existing["id"])
     if not updated:
         await update.callback_query.answer("Couldn't confirm.", show_alert=True)
@@ -453,6 +478,7 @@ async def _handle_confirm_self(
             f"Game was full — you're on waitlist #{updated['position']}.",
         )
     await render_card_in_place(context, update, game_id, user_id)
+    await _notify(context, game_id, before, user_id)
 
 
 async def _do_confirm_maybe(
@@ -463,14 +489,13 @@ async def _do_confirm_maybe(
     if not p or p["status"] != "maybe":
         await update.callback_query.answer("That maybe is no longer here.", show_alert=True)
         return
+    before = db.get_participants(p["game_id"])
     updated = db.confirm_from_maybe(participant_id)
     if not updated:
         await update.callback_query.answer("Couldn't confirm.", show_alert=True)
         return
     await render_manage_in_place(context, update, p["game_id"])
-    # DM the affected member if they're now confirmed (don't spam for waitlist)
-    if updated["status"] == "confirmed" and updated.get("member_id"):
-        await _notify_promoted(context, p["game_id"], updated)
+    await _notify(context, p["game_id"], before, update.effective_user.id)
 
 
 async def _prompt_guest(
@@ -508,6 +533,7 @@ async def on_guest_name_message(update: Update, context: ContextTypes.DEFAULT_TY
     added_by = pending["added_by"]
     context.user_data.pop("pending_guest", None)
 
+    before = db.get_participants(game_id)
     try:
         result = db.add_participant(game_id, added_by=added_by, guest_name=text)
     except ValueError:
@@ -521,6 +547,9 @@ async def on_guest_name_message(update: Update, context: ContextTypes.DEFAULT_TY
     game = db.get_game(game_id)
     if game and game.get("chat_id"):
         await post_game_card(context, game["chat_id"], game_id)
+    # The adder is the actor — DMs are only sent to other affected
+    # users (e.g. if adding a guest as confirmed bumps someone else).
+    await _notify(context, game_id, before, added_by)
 
 
 async def cancel_guest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -555,10 +584,10 @@ async def _do_remove(
         await update.callback_query.answer("Already gone.")
         return
     game_id = p["game_id"]
-    promoted = db.remove_participant(participant_id)
+    before = db.get_participants(game_id)
+    db.remove_participant(participant_id)
     await render_manage_in_place(context, update, game_id)
-    if promoted and promoted.get("member_id"):
-        await _notify_promoted(context, game_id, promoted)
+    await _notify(context, game_id, before, update.effective_user.id)
 
 
 async def _do_demote(
@@ -567,19 +596,19 @@ async def _do_demote(
     p = db.get_participant(participant_id)
     if not p:
         return
-    promoted = db.demote_to_waitlist(participant_id)
+    before = db.get_participants(p["game_id"])
+    db.demote_to_waitlist(participant_id)
     await render_manage_in_place(context, update, p["game_id"])
-    if promoted and promoted.get("member_id"):
-        await _notify_promoted(context, p["game_id"], promoted)
+    await _notify(context, p["game_id"], before, update.effective_user.id)
 
 
 async def _do_promote_top(
     context: ContextTypes.DEFAULT_TYPE, update: Update, game_id: int
 ) -> None:
-    promoted = db.promote_top_of_waitlist(game_id)
+    before = db.get_participants(game_id)
+    db.promote_top_of_waitlist(game_id)
     await render_manage_in_place(context, update, game_id)
-    if promoted and promoted.get("member_id"):
-        await _notify_promoted(context, game_id, promoted)
+    await _notify(context, game_id, before, update.effective_user.id)
 
 
 async def _do_promote_one(
@@ -595,6 +624,7 @@ async def _do_promote_one(
     if db.confirmed_count(p["game_id"]) >= game["max_players"]:
         await update.callback_query.answer("No empty slot — use Swap instead.", show_alert=True)
         return
+    before = db.get_participants(p["game_id"])
     # Move this specific participant up; simplest is remove + re-add as confirmed
     # but we'd lose ordering. Instead: just flip status + position.
     with db.transaction() as conn:
@@ -609,8 +639,7 @@ async def _do_promote_one(
     # Recompact waitlist
     db._renumber(p["game_id"], "waitlist")  # noqa: SLF001
     await render_manage_in_place(context, update, p["game_id"])
-    if p.get("member_id"):
-        await _notify_promoted(context, p["game_id"], db.get_participant(participant_id))
+    await _notify(context, p["game_id"], before, update.effective_user.id)
 
 
 async def _show_swap_picker(update: Update, waitlist_pid: int) -> None:
@@ -638,19 +667,17 @@ async def _do_swap(
     waitlist_pid: int,
     confirmed_pid: int,
 ) -> None:
+    p = db.get_participant(confirmed_pid)
+    game_id = p["game_id"] if p else None
+    before = db.get_participants(game_id) if game_id else []
     try:
-        new_confirmed, new_waitlisted = db.swap_with_waitlist(confirmed_pid, waitlist_pid)
+        new_confirmed, _ = db.swap_with_waitlist(confirmed_pid, waitlist_pid)
     except ValueError as e:
         await update.callback_query.answer(f"Swap failed: {e}", show_alert=True)
         return
 
     await render_manage_in_place(context, update, new_confirmed["game_id"])
-
-    # Notifications
-    if new_confirmed.get("member_id"):
-        await _notify_promoted(context, new_confirmed["game_id"], new_confirmed)
-    if new_waitlisted.get("member_id"):
-        await _notify_bumped(context, new_waitlisted["game_id"], new_waitlisted)
+    await _notify(context, new_confirmed["game_id"], before, update.effective_user.id)
 
 
 # ─────────────────────── game edit / delete ─────────────────────── #
@@ -904,6 +931,7 @@ async def on_edit_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except ValueError:
             await update.effective_message.reply_text("Send a number between 2 and 32.")
             return
+        before = db.get_participants(game_id)
         result = db.update_game_max(game_id, n)
         context.user_data.pop("pending_edit", None)
 
@@ -916,13 +944,9 @@ async def on_edit_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             msg += f"\nPromoted to confirmed: {names}"
         await update.effective_message.reply_html(msg)
 
-        # DM affected members
-        for p in result["promoted"]:
-            if p.get("member_id"):
-                await _notify_promoted(context, game_id, p)
-        for p in result["demoted"]:
-            if p.get("member_id"):
-                await _notify_bumped(context, game_id, p)
+        # Unified diff-based DMs (catches guest-of-someone moves too,
+        # which the old promoted/demoted loop didn't).
+        await _notify(context, game_id, before, update.effective_user.id)
 
     # Re-post the card so the group sees fresh state
     game = db.get_game(game_id)
@@ -1091,6 +1115,7 @@ async def _do_add_member(
         await update.callback_query.answer("That member is gone.", show_alert=True)
         return
 
+    before = db.get_participants(game_id)
     try:
         result = db.add_participant(
             game_id, added_by=actor_user_id, member_id=target_member_id
@@ -1111,76 +1136,18 @@ async def _do_add_member(
     where = "confirmed" if result["status"] == "confirmed" else f"waitlist #{result['position']}"
     await update.callback_query.answer(f"Added {target['display_name']} ({where}).")
     await render_card_in_place(context, update, game_id, actor_user_id)
-
-    # DM the added member if they ended up confirmed (don't spam for waitlist)
-    if result["status"] == "confirmed":
-        try:
-            tz = context.bot_data["tz"]
-            game = db.get_game(game_id)
-            when = views.format_when(
-                game["scheduled_for"], tz, game.get("duration_minutes"),
-            )
-            await context.bot.send_message(
-                chat_id=target_member_id,
-                text=(
-                    f"➕ <b>{update.effective_user.first_name or 'A member'}</b> added you "
-                    f"to a game.\n\n"
-                    f"<b>{when}</b> @ {game['location']}\n\n"
-                    f"<i>Tap Leave on the game card in the group if you can't make it.</i>"
-                ),
-                parse_mode=ParseMode.HTML,
-            )
-        except Exception as e:
-            log.info("Couldn't DM added member %s: %s", target_member_id, e)
+    # The unified DM helper sends the same "you've been added" notification
+    # as the old inline code, plus catches the waitlist case (the old code
+    # silently skipped DM-ing waitlisted adds).
+    await _notify(context, game_id, before, actor_user_id)
 
 
 # ─────────────────────── DM notifications ─────────────────────── #
-
-async def _notify_promoted(
-    context: ContextTypes.DEFAULT_TYPE, game_id: int, participant: dict
-) -> None:
-    """DM a member that they've been promoted to confirmed."""
-    if not participant.get("member_id"):
-        return
-    tz = context.bot_data["tz"]
-    game = db.get_game(game_id)
-    if not game:
-        return
-    text = (
-        f"🎉 You're <b>in</b> for the game on "
-        f"{views.format_when(game['scheduled_for'], tz, game.get('duration_minutes'))} "
-        f"@ {game['location']}."
-    )
-    try:
-        await context.bot.send_message(
-            chat_id=participant["member_id"], text=text, parse_mode=ParseMode.HTML
-        )
-    except Exception as e:
-        # Most likely the user has never DM'd the bot — silent fail is fine
-        log.info("Couldn't DM user %s: %s", participant["member_id"], e)
-
-
-async def _notify_bumped(
-    context: ContextTypes.DEFAULT_TYPE, game_id: int, participant: dict
-) -> None:
-    if not participant.get("member_id"):
-        return
-    tz = context.bot_data["tz"]
-    game = db.get_game(game_id)
-    if not game:
-        return
-    text = (
-        f"⚠ You've been moved to the <b>waitlist</b> for the game on "
-        f"{views.format_when(game['scheduled_for'], tz, game.get('duration_minutes'))} "
-        f"@ {game['location']}.\n\n"
-        f"You're now #1 on the waitlist."
-    )
-    try:
-        await context.bot.send_message(
-            chat_id=participant["member_id"], text=text, parse_mode=ParseMode.HTML
-        )
-    except Exception as e:
-        log.info("Couldn't DM user %s: %s", participant["member_id"], e)
+# Per-participant DMs are routed through bot.notifications.diff_and_notify
+# (via the _notify shim at the top of this module). The ad-hoc
+# _notify_promoted / _notify_bumped helpers used to live here; they
+# only DM'd member promotions/demotions and missed guest-of-someone
+# moves, which is why we replaced them with a snapshot-diff approach.
 
 
 async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
