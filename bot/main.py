@@ -7,6 +7,11 @@ Reads from .env:
   DB_PATH           — defaults to db.sqlite
   TIMEZONE          — IANA name, defaults to America/Los_Angeles
   ALLOWED_GROUP_ID  — optional; locks bot to one group (legacy)
+  PUBLIC_URL        — HTTPS origin where /register and /manage are served
+                       (required for the new mini-app buttons; e.g.
+                        https://bball.example.com)
+  HTTP_HOST         — bind address for the local HTTP server, default 127.0.0.1
+  HTTP_PORT         — port for the local HTTP server, default 8081
 """
 from __future__ import annotations
 
@@ -19,7 +24,7 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from telegram.ext import Application, CommandHandler
 
-from . import db, chat_picker
+from . import db, chat_picker, http_server
 from .handlers import balance, common, games, newgame, roster, spend, chat_events
 
 
@@ -37,11 +42,22 @@ async def amain() -> None:
         raise SystemExit("BOT_TOKEN is required (put it in .env)")
     db_path = os.environ.get("DB_PATH", "db.sqlite")
     tz_name = os.environ.get("TIMEZONE", "America/Los_Angeles")
+    public_url = os.environ.get("PUBLIC_URL", "").strip() or None
+    http_host = os.environ.get("HTTP_HOST", "127.0.0.1")
+    http_port = int(os.environ.get("HTTP_PORT", "8081"))
+
+    if not public_url:
+        log.warning(
+            "PUBLIC_URL is not set — the HTTP server will still start on "
+            "HTTP_HOST:HTTP_PORT but you'll need to point a reverse proxy "
+            "at it before the mini-apps can be reached from Telegram."
+        )
 
     db.init_db(db_path)
 
     app = Application.builder().token(token).build()
-    app.bot_data["tz"] = ZoneInfo(tz_name)
+    tz = ZoneInfo(tz_name)
+    app.bot_data["tz"] = tz
 
     # /start, /help
     app.add_handler(CommandHandler("start", common.cmd_start))
@@ -90,14 +106,44 @@ async def amain() -> None:
 
     app.add_error_handler(common.error_handler)
 
+    # ─── HTTP server (mini-apps + JSON API) ───
+    async def refresh_card_cb(game_id: int) -> None:
+        # Called from the HTTP server after every mutating mini-app call.
+        # Re-renders the canonical group-card message so the chat stays in
+        # sync with the mini-app's view.
+        await roster.refresh_card_in_chat(app.bot, app.bot_data, game_id)
+
+    http_app = http_server.create_app(
+        bot=app.bot,
+        bot_token=token,
+        tz=tz,
+        refresh_card=refresh_card_cb,
+    )
+
     # ─── Boot ───
     log.info("Bot starting…")
     await app.initialize()
     await app.start()
+
+    # Fetch the bot's @username once at startup; we need it to build the
+    # `t.me/<bot>/<app>?startapp=<id>` deep links the new card keyboard uses.
+    # Cached in bot_data so view-layer code can read it without an API call.
+    try:
+        me = await app.bot.get_me()
+        app.bot_data["bot_username"] = me.username
+        log.info("Bot username resolved: @%s", me.username)
+    except Exception as e:
+        log.warning(
+            "Couldn't fetch bot username at startup (%s). Mini-app deep "
+            "links will fall back to an error message until restart.", e,
+        )
+
     await app.updater.start_polling(
         allowed_updates=["message", "callback_query", "my_chat_member", "chat_member"]
     )
     log.info("Telegram polling started")
+
+    http_runner = await http_server.run_http_server(http_app, http_host, http_port)
 
     # Block until a signal, then shut down cleanly
     stop = asyncio.Event()
@@ -110,6 +156,7 @@ async def amain() -> None:
     await stop.wait()
 
     log.info("Shutting down…")
+    await http_runner.cleanup()
     await app.updater.stop()
     await app.stop()
     await app.shutdown()

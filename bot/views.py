@@ -14,6 +14,23 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.helpers import escape
 
 
+# Short names of the two Mini Apps registered in BotFather via /newapp.
+# These are the path segment in t.me/<bot_username>/<short_name>?startapp=<id>.
+# Keep in sync with the BotFather setup steps in README.md.
+REGISTER_APP_SHORT_NAME = "register"
+MANAGE_APP_SHORT_NAME = "manage"
+
+
+def _miniapp_url(bot_username: str, short_name: str, game_id: int) -> str:
+    """Build the t.me deep link that opens a Mini App with a start_param.
+
+    Telegram passes start_param through to the Web App as
+    Telegram.WebApp.initDataUnsafe.start_param, which is how the page
+    learns which game it's viewing.
+    """
+    return f"https://t.me/{bot_username}/{short_name}?startapp={game_id}"
+
+
 # ─────────────────────── time formatting ─────────────────────── #
 
 def format_when(iso_string: str, tz: ZoneInfo) -> str:
@@ -119,55 +136,79 @@ def render_game_card(game: dict, participants: list[dict], tz: ZoneInfo, organiz
 
 def game_card_keyboard(
     game_id: int,
-    viewer_in_game: Optional[str],
-    game_full: bool,
+    bot_username: Optional[str] = None,
+    viewer_registered: bool = False,
     has_payment: bool = False,
 ) -> InlineKeyboardMarkup:
     """Buttons under a game card.
 
-    viewer_in_game: None | "confirmed" | "maybe" | "waitlist"
-    has_payment: whether the game has a payment_amount set. When True, we
-        surface a 💰 Paid button so anyone can mark themselves/others paid
-        without going through Manage.
+    The card offers three or four buttons that replace the old long
+    per-action strip (Join / Maybe / Add Member / Add Guest / Manage /
+    Leave) with two Mini App entry points + Paid + Refresh.
 
-    Maybes never count toward capacity, so the Maybe button is always
-    available regardless of game_full.
+    Mini apps launch from URL deep links of the form
+        https://t.me/<bot_username>/<short_name>?startapp=<game_id>
+    rather than InlineKeyboardButton(web_app=…), because Telegram only
+    accepts `web_app` inline buttons in private chats. Group cards must
+    use URL deep links that point at a BotFather-registered Web App
+    short name. The two short names we expect are REGISTER_APP_SHORT_NAME
+    and MANAGE_APP_SHORT_NAME.
+
+    Args:
+        game_id: The game being shown.
+        bot_username: The bot's @username (no leading @), used to build
+            the t.me deep link. We fetch this from getMe at startup and
+            cache it in bot_data; the keyboard falls back to a friendly
+            callback-data error if it isn't available.
+        viewer_registered: True if the user opening this card has either
+            registered themselves (any status) or added at least one
+            guest under their name. Drives the Register vs. Update label.
+        has_payment: Whether the game has a payment_amount set. When True,
+            we surface a 💰 Paid button that opens the existing in-chat
+            paid picker (unchanged from the old card flow).
     """
     rows = []
 
-    # Primary action depends on viewer state
-    if viewer_in_game is None:
-        # Not in the game at all → offer Join (or Join Waitlist if full) + Maybe
-        join_label = "⏳ Join Waitlist" if game_full else "✓ Join"
-        rows.append([
-            InlineKeyboardButton(join_label, callback_data=f"join:{game_id}"),
-            InlineKeyboardButton("🤔 Maybe", callback_data=f"maybe:{game_id}"),
-        ])
-    elif viewer_in_game == "maybe":
-        # Currently a maybe → can confirm (→confirmed or waitlist) or leave
-        rows.append([
-            InlineKeyboardButton("✓ Confirm", callback_data=f"confirm_self:{game_id}"),
-            InlineKeyboardButton("✗ Leave (maybe)", callback_data=f"leave:{game_id}"),
-        ])
-    else:
-        # Confirmed or waitlist → just Leave
+    # 1. Register / Update Registration
+    reg_label = "✏️ Update Registration" if viewer_registered else "📝 Register"
+    if bot_username:
         rows.append([
             InlineKeyboardButton(
-                f"✗ Leave ({viewer_in_game})",
-                callback_data=f"leave:{game_id}",
+                reg_label,
+                url=_miniapp_url(bot_username, REGISTER_APP_SHORT_NAME, game_id),
+            ),
+        ])
+    else:
+        # Fallback used only when bot_username isn't known yet. Surfaces a
+        # readable error if someone taps it instead of silently dropping.
+        rows.append([
+            InlineKeyboardButton(reg_label, callback_data=f"miniapp_unavailable:{game_id}"),
+        ])
+
+    # 2. Manage (admin-only — UI gating happens in the mini-app)
+    if bot_username:
+        rows.append([
+            InlineKeyboardButton(
+                "⚙ Manage (admin only)",
+                url=_miniapp_url(bot_username, MANAGE_APP_SHORT_NAME, game_id),
+            ),
+        ])
+    else:
+        rows.append([
+            InlineKeyboardButton(
+                "⚙ Manage (admin only)",
+                callback_data=f"miniapp_unavailable:{game_id}",
             ),
         ])
 
-    rows.append([
-        InlineKeyboardButton("+ Add Member", callback_data=f"addmem:{game_id}"),
-        InlineKeyboardButton("+ Add Guest", callback_data=f"guest:{game_id}"),
-    ])
+    # 3. Paid — unchanged in-chat picker.
     if has_payment:
         rows.append([
             InlineKeyboardButton("💰 Paid", callback_data=f"paid:{game_id}"),
         ])
+
+    # 4. Refresh — re-render the card with the latest state for this viewer.
     rows.append([
-        InlineKeyboardButton("⚙ Manage", callback_data=f"manage:{game_id}"),
         InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh:{game_id}"),
     ])
     return InlineKeyboardMarkup(rows)
