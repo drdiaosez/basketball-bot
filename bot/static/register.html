@@ -61,6 +61,8 @@
   .game-title { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
   .game-sub  { color: var(--hint); font-size: 13px; margin-bottom: 2px; }
   .game-pay  { font-weight: 600; margin-top: 4px; }
+  .game-pay-details { font-size: 13px; color: var(--hint); margin-top: 2px; }
+  .game-pay-details a { color: var(--link, #3390ec); text-decoration: none; }
   .game-notes {
     margin-top: 10px;
     padding: 8px 10px;
@@ -343,7 +345,8 @@ function confirmAsync(question) {
 
 function renderHeader(game, counts) {
   const payLine = game.has_payment
-    ? `<div class="game-pay">💰 ${escapeHtml(game.payment_amount_label)} per person</div>`
+    ? `<div class="game-pay">💰 ${escapeHtml(game.payment_amount_label)} per person</div>` +
+      `<div class="game-pay-details">Venmo: <a href="https://venmo.com/u/Evan-Su">@Evan-Su</a> · Zelle: 310-889-8841</div>`
     : "";
   const notesLine = game.notes
     ? `<div class="game-notes">📝 ${escapeHtml(game.notes)}</div>`

@@ -64,6 +64,8 @@
     color: var(--hint);
   }
   .pill b { color: var(--text); }
+  .pay-details { font-size: 13px; color: var(--hint); margin-top: 6px; }
+  .pay-details a { color: var(--link, #3390ec); text-decoration: none; }
 
   /* Participant rows
      ─────────────────
@@ -427,8 +429,11 @@ memberPicker.addEventListener("click", (ev) => {
 
 // ─── Renderers ──────────────────────────────────────────────
 function renderHeader(game, counts) {
-  const payLine = game.has_payment
+  const payPill = game.has_payment
     ? `<span class="pill">💰 <b>${escapeHtml(game.payment_amount_label)}</b> · paid <b>${counts.paid}/${counts.confirmed}</b></span>`
+    : "";
+  const payDetails = game.has_payment
+    ? `<div class="pay-details">Venmo: <a href="https://venmo.com/u/Evan-Su">@Evan-Su</a> · Zelle: 310-889-8841</div>`
     : "";
   return `
     <div class="card">
@@ -438,8 +443,9 @@ function renderHeader(game, counts) {
         <span class="pill">Confirmed <b>${counts.confirmed}/${game.max_players}</b></span>
         <span class="pill">Maybe <b>${counts.maybe}</b></span>
         <span class="pill">Waitlist <b>${counts.waitlist}</b></span>
-        ${payLine}
+        ${payPill}
       </div>
+      ${payDetails}
     </div>`;
 }
 

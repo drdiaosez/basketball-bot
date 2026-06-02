@@ -182,7 +182,7 @@ def _serve_static(filename: str) -> Callable[[web.Request], Awaitable[web.Respon
     async def _handler(request: web.Request) -> web.Response:
         if not path.exists():
             return web.Response(text=f"{filename} not deployed", status=500)
-        return web.FileResponse(path)
+        return web.FileResponse(path, headers={"Cache-Control": "no-cache"})
 
     return _handler
 
