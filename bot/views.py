@@ -116,7 +116,7 @@ def render_game_card(game: dict, participants: list[dict], tz: ZoneInfo, organiz
     lines.append(f"<i>Organized by {escape(organizer_name)}</i>")
     if has_payment:
         lines.append(f"💰 <b>{format_money(game['payment_amount_cents'])}</b> per person")
-        lines.append("Venmo: @Evan-Su · Zelle: 310-889-8841")
+        lines.append('Venmo: <a href="https://venmo.com/u/Evan-Su">venmo.com/u/Evan-Su</a> · Zelle: 310-889-8841')
     if game.get("notes"):
         lines.append(f"📝 {escape(game['notes'])}")
     lines.append("")
