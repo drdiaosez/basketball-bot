@@ -515,6 +515,8 @@ function renderEditCard(game) {
   // Strip trailing seconds / fractional seconds / timezone for the input.
   const m = iso.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
   const dtVal = m ? `${m[1]}T${m[2]}` : "";
+  // Track original value so saveGame() can skip it when unchanged.
+  window._originalGameTime = dtVal;
 
   return `
     <div class="card">
@@ -622,7 +624,7 @@ function saveGame() {
   // Only include fields the admin actually intended to set. The datetime
   // input is `YYYY-MM-DDTHH:MM` (no seconds/tz). The server will attach
   // the bot's configured TZ when it parses.
-  if (time) patch.scheduled_for = time;
+  if (time && time !== window._originalGameTime) patch.scheduled_for = time;
   if (!Number.isNaN(duration)) patch.duration_minutes = duration;
   if (loc) patch.location = loc;
   if (!Number.isNaN(max)) patch.max_players = max;
